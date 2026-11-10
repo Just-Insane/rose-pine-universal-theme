@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Mixed colours</title>
+<style>
+body { background: white; color: #222; font: 16px sans-serif; }
+.surface { padding: 12px; }
+.light { background: #fff; color: #222; }
+.dark { background: #222; color: #eee; }
+.badge { background: #063; color: #fff; }
+.badge-alt { background: #111; }
+.dark-fix { background: #fff; color: #666; }
+.dark-base { background: #fff; color: #000; }
+.dark-override { color: #666; }
+.gradient { background-image: linear-gradient(#fff,#eee); }
+.warning { color: #b00020; }
+.overlay { position: relative; background: #fff; }
+.overlay::before { content: ""; position: absolute; inset: 0; background: #222; }
+.overlay a { position: relative; }
+.hover:hover { color: #f00; }
+</style></head><body>
+<h1>Mixed surfaces</h1>
+<div class="surface light"><a href="#light" id="light">Light-surface link</a></div>
+<div class="surface dark"><a href="#dark" id="dark">Dark-surface link</a></div>
+<div class="surface badge" id="badge">Readable badge</div>
+<div class="surface badge badge-alt" id="badge-alt">Overridden badge</div>
+<div class="surface dark-fix" id="dark-fix">Readable neutral text</div>
+<div class="surface dark-base dark-override" id="dark-override">Overridden neutral text</div>
+<div class="surface gradient"><a href="#gradient" id="gradient">Gradient link</a></div>
+<div class="surface light"><a href="#warning" id="warning" class="warning">Warning link</a></div>
+<div class="surface overlay"><a href="#overlay" id="overlay">Overlay link</a></div>
+<div class="surface light"><a href="#hover" id="hover" class="hover">Hover link</a></div>
+<div class="surface light" id="disabled" aria-disabled="true" style="color:#aaa">Disabled text</div>
+<div class="surface light" id="button-role" role="button" style="color:#aaa">Interactive text</div>
+<div style="height: 1400px"></div>
+<div class="surface light"><a href="#offscreen" id="offscreen">Offscreen link</a></div>
+</body></html>

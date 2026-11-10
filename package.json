@@ -1,0 +1,16 @@
+{
+  "name": "rose-pine-universal-theme",
+  "version": "1.8.8",
+  "private": true,
+  "description": "Ros\u00e9 Pine userscript and browser regression fixtures",
+  "scripts": {
+    "test": "node tests/run.cjs && node tests/csp.cjs && node tests/bitwarden.cjs",
+    "test:syntax": "node --check src/rose-pine.user.js",
+    "test:notte": "node tests/compare-notte.cjs",
+    "test:public": "node tests/public-smoke.cjs"
+  },
+  "devDependencies": {
+    "axe-core": "4.14.0",
+    "playwright": "1.65.0"
+  }
+}
