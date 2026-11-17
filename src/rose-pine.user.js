@@ -1,13 +1,41 @@
 // ==UserScript==
 // @name Rosé Pine Main and Dawn
 // @namespace local.rosepine
-// @version 1.8.8
+// @version 1.8.13
 // @match *://*/*
 // @grant GM.xmlHttpRequest
 // @inject-into content
-// @run-at document-idle
+// @run-at document-start
 // ==/UserScript==
 (function(){
+// Paint only the root canvas while the document is being parsed. This rule has
+// zero specificity and never hides page content; a site's own root styles win.
+// Remove it before measuring the site's original colours.
+let earlyStyle = null;
+let earlyObserver = null;
+function clearEarlyStyle() {
+  if (earlyObserver) { earlyObserver.disconnect(); earlyObserver = null; }
+  if (earlyStyle) { earlyStyle.remove(); earlyStyle = null; }
+}
+function installEarlyStyle() {
+  if (!document.documentElement) return false;
+  earlyStyle = document.createElement('style');
+  earlyStyle.className = 'rose-pine-early';
+  earlyStyle.textContent = ':where(html){background-color:#faf4ed}@media (prefers-color-scheme:dark){:where(html){background-color:#191724}}';
+  document.documentElement.appendChild(earlyStyle);
+  return true;
+}
+if (!installEarlyStyle()) {
+  earlyObserver = new MutationObserver(() => {
+    if (installEarlyStyle()) { earlyObserver.disconnect(); earlyObserver = null; }
+  });
+  earlyObserver.observe(document, {childList: true});
+}
+// Never leave the temporary rule or observer behind on a stalled document.
+const earlyTimeout = setTimeout(clearEarlyStyle, 5000);
+function initializeTheme() {
+clearTimeout(earlyTimeout);
+clearEarlyStyle();
 // Use the vault's native design tokens so its own contrast and controls remain intact.
 function applyBitwardenPalette() {
   const style = document.createElement('style');
@@ -4350,6 +4378,8 @@ const module=undefined, exports=undefined, define=undefined;
             this.varTypes = new Map();
             this.rulesQueue = new Set();
             this.inlineStyleQueue = [];
+            // Upstream Dark Reader: track variables referenced by SVG attributes.
+            this.varDependantQueue = [];
             this.definedVars = new Set();
             this.varRefs = new Map();
             this.unknownColorVars = new Set();
@@ -4367,6 +4397,7 @@ const module=undefined, exports=undefined, define=undefined;
             this.varTypes.clear();
             this.rulesQueue.clear();
             this.inlineStyleQueue.splice(0);
+            this.varDependantQueue.splice(0);
             this.definedVars.clear();
             this.varRefs.clear();
             this.unknownColorVars.clear();
@@ -4391,10 +4422,14 @@ const module=undefined, exports=undefined, define=undefined;
         addInlineStyleForMatching(style) {
             this.inlineStyleQueue.push(style);
         }
+        addVarDependantForMatching(property, value) {
+            this.varDependantQueue.push({property, value});
+        }
         matchVariablesAndDependents() {
             if (
                 this.rulesQueue.size === 0 &&
-                this.inlineStyleQueue.length === 0
+                this.inlineStyleQueue.length === 0 &&
+                this.varDependantQueue.length === 0
             ) {
                 return;
             }
@@ -4656,7 +4691,7 @@ const module=undefined, exports=undefined, define=undefined;
             ) {
                 return (theme) => {
                     const unknownVars = new Set();
-                    const modify = () => {
+                    const modify = (wrapUnknownVars = false) => {
                         const variableReplaced = replaceCSSVariablesNames(
                             sourceValue,
                             (v) => {
@@ -4667,7 +4702,7 @@ const module=undefined, exports=undefined, define=undefined;
                                     return wrapBgImgVariableName(v);
                                 }
                                 unknownVars.add(v);
-                                return v;
+                                return wrapUnknownVars ? wrapBgColorVariableName(v) : v;
                             },
                             (fallback) => tryModifyBgColor(fallback, theme)
                         );
@@ -4687,7 +4722,7 @@ const module=undefined, exports=undefined, define=undefined;
                     const modified = modify();
                     if (unknownVars.size > 0) {
                         if (isFallbackResolved(modified)) {
-                            return modified;
+                            return modify(true);
                         }
                         return new Promise((resolve) => {
                             for (const unknownVar of unknownVars.values()) {
@@ -4791,8 +4826,12 @@ const module=undefined, exports=undefined, define=undefined;
             this.inlineStyleQueue.forEach((style) => {
                 this.collectVarsFromCSSDeclarations(style);
             });
+            this.varDependantQueue.forEach(({property, value}) => {
+                this.inspectVarDependant(property, value);
+            });
             this.rulesQueue.clear();
             this.inlineStyleQueue.splice(0);
+            this.varDependantQueue.splice(0);
         }
         collectVarsFromCSSDeclarations(style) {
             iterateCSSDeclarations(style, (property, value) => {
@@ -6469,6 +6508,9 @@ var RosePineCSS=(()=>{var qs=Object.create;var vt=Object.defineProperty;var js=O
             srcVal,
             cssVal
         ) {
+            if (sourceAttr !== "style" && cssVal.includes("var(")) {
+                variablesStore.addVarDependantForMatching(modifierCSSProp, cssVal);
+            }
             const cachedStringValue = inlineStringValueCache
                 .get(modifierCSSProp)
                 ?.get(cssVal);
@@ -10142,13 +10184,24 @@ function makeController(engine, media, fetchResource = fetch, getBackground = ()
     darkSchemeBackgroundColor: '#191724', darkSchemeTextColor: '#e0def4',
     lightSchemeBackgroundColor: '#faf4ed', lightSchemeTextColor: '#575279'
   }, mode === 1 ? getFixes() : null); afterEnable(mode); };
-  const apply = () => {
-    const current = ++generation;
-    if (media.matches) { clearPlaceholderStyle(); engine.disable(); enable(1); return; }
-    engine.disable();
-    schedule(() => schedule(() => {
-      if (current !== generation || media.matches) return;
-      const color = getBackground();
+  // Sample the site's original colors without removing the active theme. CSS
+  // sheets are restored before this task returns, so no intermediate paint can
+  // expose the unthemed page. Preserve sheets that were already disabled.
+  function sampleOriginalBackground() {
+    const suspended = [];
+    try {
+      if (typeof document.querySelectorAll === 'function') {
+        for (const node of document.querySelectorAll('style.darkreader, link.darkreader')) {
+          const sheet = node.sheet;
+          if (sheet && !sheet.disabled) { sheet.disabled = true; suspended.push(sheet); }
+        }
+      }
+      return getBackground();
+    } finally {
+      for (const sheet of suspended) sheet.disabled = false;
+    }
+  }
+  function shouldInvert(color) {
       let rgb = color.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
       const srgb = color.match(/^color\(\s*srgb\s+([+-]?(?:\d+\.?\d*|\.\d+)%?)\s+([+-]?(?:\d+\.?\d*|\.\d+)%?)\s+([+-]?(?:\d+\.?\d*|\.\d+)%?)(?:\s*\/\s*(?:1(?:\.0+)?|100%)\s*)?\s*\)$/i);
       if (!rgb && !srgb) {
@@ -10156,25 +10209,37 @@ function makeController(engine, media, fetchResource = fetch, getBackground = ()
           const canvas = document.createElement('canvas');
           canvas.width = canvas.height = 1;
           const context = canvas.getContext('2d', {willReadFrequently: true});
-          if (!context || !CSS.supports('color', color)) { enable(0); showPlaceholderStyle(); return; }
+          if (!context || !CSS.supports('color', color)) return false;
           context.clearRect(0, 0, 1, 1);
           context.fillStyle = '#010203';
           context.fillStyle = color;
           const first = context.fillStyle;
           context.fillStyle = '#040506';
           context.fillStyle = color;
-          if (context.fillStyle !== first) { enable(0); showPlaceholderStyle(); return; }
+          if (context.fillStyle !== first) return false;
           context.fillRect(0, 0, 1, 1);
           const pixel = context.getImageData(0, 0, 1, 1).data;
-          if (pixel[3] !== 255) { enable(0); showPlaceholderStyle(); return; }
+          if (pixel[3] !== 255) return false;
           rgb = [color, pixel[0], pixel[1], pixel[2]];
-        } catch (_) { enable(0); showPlaceholderStyle(); return; }
+        } catch (_) { return false; }
       }
       const channel = value => Math.max(0, Math.min(255, srgb ? parseFloat(value) * (value.endsWith('%') ? 2.55 : 255) : Number(value)));
       const parts = rgb || srgb;
       const luminance = 0.2126 * channel(parts[1]) + 0.7152 * channel(parts[2]) + 0.0722 * channel(parts[3]);
-      enable(0, luminance < 128); showPlaceholderStyle();
-    }));
+      return luminance < 128;
+  }
+  let activeTheme = null;
+  const apply = () => {
+    ++generation;
+    if (media.matches) {
+      clearPlaceholderStyle();
+      if (activeTheme !== 'dark') { if (activeTheme !== null) engine.disable(); enable(1); activeTheme = 'dark'; }
+      return;
+    }
+    const invert = shouldInvert(sampleOriginalBackground());
+    const nextTheme = invert ? 'light-inverted' : 'light';
+    if (activeTheme !== nextTheme) { if (activeTheme !== null) engine.disable(); enable(0, invert); activeTheme = nextTheme; }
+    showPlaceholderStyle();
   };
   media.addEventListener('change', apply);
   apply();
@@ -10254,7 +10319,15 @@ SOFTWARE.
   const media = matchMedia('(prefers-color-scheme: dark)');
   const style = document.createElement('style'); style.id = 'rose-pine-requested';
   (document.head || document.documentElement).appendChild(style);
-  const apply = () => { const mode = media.matches ? 'main' : 'dawn'; style.textContent = rules.map(([name,i]) => variants[name][mode][i]).join('\n'); };
+  const apply = () => {
+    const mode = media.matches ? 'main' : 'dawn';
+    style.textContent = rules.map(([name,i]) => variants[name][mode][i]).join('\n');
+    // Flowchart edges are open curves; filling them creates solid wedges.
+    // Keep node fills and arrowhead markers unchanged.
+    if (host === 'viewscreen.githubusercontent.com' && location.pathname.startsWith('/markdown/mermaid')) {
+      style.textContent += '\n#diagram path.flowchart-link { fill: none !important; }';
+    }
+  };
   media.addEventListener('change', apply); apply(); return;
  }
 }
@@ -10282,7 +10355,14 @@ if (location.hostname === 'youtube.com' || location.hostname.endsWith('.youtube.
   main: `:root { --yt-sys-color-baseline--raised-background: #1f1d2e !important; --yt-sys-color-baseline--menu-background: #1f1d2e !important; --yt-sys-color-baseline--surface-container: #26233a !important; --yt-sys-color-baseline--text-primary: #e0def4 !important; --yt-sys-color-baseline--text-secondary: #b4b1ca !important; --yt-sys-color-baseline--outline-opaque: #524f67 !important; } ytd-app { background-color: #1f1d2e !important; } ytd-app #frosted-glass { background-color: rgba(31, 29, 46, 0.9) !important; } ytd-masthead #guide-button button, ytd-masthead #guide-button yt-icon { color: #e0def4 !important; } yt-searchbox { color: #e0def4 !important; }`,
   dawn: `:root { --yt-sys-color-baseline--raised-background: #fffaf3 !important; --yt-sys-color-baseline--menu-background: #fffaf3 !important; --yt-sys-color-baseline--surface-container: #f2e9e1 !important; --yt-sys-color-baseline--text-primary: #575279 !important; --yt-sys-color-baseline--text-secondary: #625d79 !important; --yt-sys-color-baseline--outline-opaque: #d4c9c3 !important; } ytd-app { background-color: #fffaf3 !important; } ytd-app #frosted-glass { background-color: rgba(255, 250, 243, 0.9) !important; } ytd-masthead #guide-button button, ytd-masthead #guide-button yt-icon { color: #575279 !important; } yt-searchbox { color: #575279 !important; }`
  };
- const applyYouTube = () => { const mode = media.matches ? 'main' : 'dawn'; const v = variants[mode]; style.textContent = v[0] + (location.hostname === 'studio.youtube.com' ? v[1] : '') + (location.hostname === 'm.youtube.com' ? v[2] : '') + youtubeSurfaces[mode]; };
+ const applyYouTube = () => {
+  const mode = media.matches ? 'main' : 'dawn'; const v = variants[mode];
+  // Current YouTube navigation uses separate color tokens that can stay in
+  // light mode after the system appearance changes.
+  const guideColor = mode === 'main' ? '#e0def4' : '#575279';
+  const guide = `ytd-mini-guide-entry-renderer .title, ytd-guide-entry-renderer .title { color: ${guideColor} !important; }`;
+  style.textContent = v[0] + (location.hostname === 'studio.youtube.com' ? v[1] : '') + (location.hostname === 'm.youtube.com' ? v[2] : '') + youtubeSurfaces[mode] + guide;
+ };
  media.addEventListener('change', applyYouTube); applyYouTube(); return;
 }
 
@@ -10307,7 +10387,7 @@ function fixBitwardenLanding(mode) {
 }
 function applySiteContrastFixes(mode) {
   const host = location.hostname.toLowerCase();
-  if (mode !== 0 && !(mode === 1 && host === 'dash.cloudflare.com')) return;
+  if (mode !== 0 && !(mode === 1 && (host === 'dash.cloudflare.com' || host === 'app.graphify.com'))) return;
   const rules = [];
   // Keep the native Cloudflare drawer opaque and in the Main palette.
   if (mode === 1 && host === 'dash.cloudflare.com') {
@@ -10343,9 +10423,93 @@ function applySiteContrastFixes(mode) {
   for (const rule of rules) style.sheet.insertRule(rule, style.sheet.cssRules.length);
 }
 
+// Repair only simple SVG nodes whose solid rectangle and text can be paired.
+// Ambiguous graphics, gradients, overlays and partially transparent nodes are
+// left to the site. Graphify uses these nodes for some architecture views.
+function startGraphifySvgContrast(doc, media) {
+  const attr = 'data-rp-graph-label';
+  const style = doc.createElement('style');
+  style.className = 'darkreader rose-pine-graphify-svg';
+  const fixed = new Set(); let timer = null;
+  function attach() {
+    if (!style.isConnected) (doc.head || doc.documentElement).appendChild(style);
+    if (!style.sheet) return false;
+    try {
+      if (!style.sheet.cssRules.length) {
+        style.sheet.insertRule(`svg text[${attr}="dark"], svg text[${attr}="dark"] tspan { fill: #191724 !important; }`, 0);
+        style.sheet.insertRule(`svg text[${attr}="light"], svg text[${attr}="light"] tspan { fill: #faf4ed !important; }`, 1);
+      }
+      return true;
+    } catch (_) { return false; }
+  }
+  const parse = value => {
+    const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i.exec(value);
+    return m && (m[4] === undefined || Number(m[4]) === 1) ? m.slice(1,4).map(Number) : null;
+  };
+  const lum = color => color.map(x => {x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4;}).reduce((n,x,i) => n + x * [.2126,.7152,.0722][i], 0);
+  const ratio = (a,b) => { const x=lum(a),y=lum(b); return (Math.max(x,y)+.05)/(Math.min(x,y)+.05); };
+  const opaque = node => {
+    const s = getComputedStyle(node);
+    return s.display !== 'none' && s.visibility === 'visible' && Number(s.opacity) >= .999 &&
+      (!s.fillOpacity || Number(s.fillOpacity) >= .999) && s.filter === 'none' &&
+      (!s.clipPath || s.clipPath === 'none') && (!s.mask || s.mask === 'none') &&
+      (!s.mixBlendMode || s.mixBlendMode === 'normal');
+  };
+  function scan() {
+    timer = null;
+    for (const text of fixed) text.removeAttribute(attr);
+    fixed.clear();
+    if (doc.hidden || !attach()) return;
+    const texts = doc.querySelectorAll('svg g > text');
+    if (texts.length > 512) return;
+    for (const text of texts) {
+      const group = text.parentElement;
+      const children = [...group.children];
+      const rects = children.filter(e => e.localName === 'rect');
+      const labels = children.filter(e => e.localName === 'text');
+      if (rects.length !== 1 || labels.length !== 1 || children.some(e => !['rect','text','title','desc'].includes(e.localName))) continue;
+      const rect=rects[0];
+      if (!text.textContent.trim() || !opaque(text) || !opaque(rect)) continue;
+      let safe = true;
+      for (let n=group; n; n=n.parentElement) {
+        if (!opaque(n)) {safe=false;break;}
+        if (n === doc.documentElement) break;
+      }
+      if (!safe) continue;
+      const fg=parse(getComputedStyle(text).fill), bg=parse(getComputedStyle(rect).fill);
+      if (!fg || !bg || ratio(fg,bg) >= 4.5) continue;
+      if ([...text.querySelectorAll('*')].some(e => e.localName !== 'tspan' || !opaque(e) || getComputedStyle(e).fill !== getComputedStyle(text).fill)) continue;
+      const a=text.getBoundingClientRect(), b=rect.getBoundingClientRect();
+      if (!a.width || !a.height || !b.width || !b.height || a.left < b.left-1 || a.right > b.right+1 || a.top < b.top-1 || a.bottom > b.bottom+1) continue;
+      const dark=[25,23,36], light=[250,244,237];
+      const choice=ratio(dark,bg) >= 4.5 ? 'dark' : ratio(light,bg) >= 4.5 ? 'light' : null;
+      if (choice) {text.setAttribute(attr,choice);fixed.add(text);}
+    }
+  }
+  function schedule(delay=200) { if (timer) clearTimeout(timer); timer=setTimeout(scan,delay); }
+  if (!attach()) {style.remove();return;}
+  const observer = new MutationObserver(records => {
+    if (records.some(r => {
+      const target=r.target.nodeType === 1 ? r.target : r.target.parentElement;
+      if (!target || target === style || style.contains(target)) return false;
+      if (target.closest?.('svg') || target.localName === 'style') return true;
+      if (r.type === 'attributes') return Boolean(target.querySelector?.('svg g > text'));
+      if (r.type !== 'childList') return false;
+      return [...r.addedNodes,...r.removedNodes].some(n => n.nodeType === 1 && (n.localName === 'svg' || n.localName === 'style' || n.localName === 'link' || n.querySelector?.('svg')));
+    })) schedule();
+  });
+  observer.observe(doc.documentElement,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','style','fill','opacity','visibility']});
+  media.addEventListener('change',()=>schedule(700));
+  doc.addEventListener('visibilitychange',()=>schedule());
+  schedule(500);
+  setTimeout(()=>schedule(),1500);
+  setTimeout(()=>schedule(),4500);
+}
+
 // Conservatively repair low-contrast plain blue links on measurable surfaces.
 function startReadableLinks(doc, media) {
   const attribute = 'data-rose-pine-link-tone';
+  const inlineFillAttribute = 'data-rose-pine-inline-fill';
   const colors = {dawn: [40,105,131], neutral: [87,82,121], iris: [144,122,166], foam: [156,207,216], text: [224,222,244], base: [255,250,243]};
   const style = doc.createElement('style');
   style.className = 'darkreader rose-pine-readable-links';
@@ -10353,7 +10517,12 @@ function startReadableLinks(doc, media) {
     if(!style.isConnected)(doc.head||doc.documentElement).appendChild(style);
     if(!style.sheet)return false;
     try {
-      if(!style.sheet.cssRules.length)for(const [name,color] of Object.entries(colors))style.sheet.insertRule(`a[${attribute}="${name}"]:not(:hover):not(:focus):not(:active), :not(a)[${attribute}="${name}"] { color: rgb(${color.join(',')}) !important; }`,style.sheet.cssRules.length);
+      if(!style.sheet.cssRules.length)for(const [name,color] of Object.entries(colors)) {
+        style.sheet.insertRule(`a[${attribute}="${name}"]:not(:hover):not(:focus):not(:active), :not(a)[${attribute}="${name}"] { color: rgb(${color.join(',')}) !important; }`,style.sheet.cssRules.length);
+        // Text fill can override an inline !important color without changing
+        // the site's inline style or affecting unrelated descendants.
+        style.sheet.insertRule(`a[${attribute}="${name}"][${inlineFillAttribute}]:not(:hover):not(:focus):not(:active), :not(a)[${attribute}="${name}"][${inlineFillAttribute}] { -webkit-text-fill-color: rgb(${color.join(',')}) !important; }`,style.sheet.cssRules.length);
+      }
       return true;
     } catch (_) { return false; }
   }
@@ -10363,7 +10532,8 @@ function startReadableLinks(doc, media) {
   const lum = c => c.slice(0,3).map(v=>{v/=255;return v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4}).reduce((a,x,i)=>a+x*[0.2126,0.7152,0.0722][i],0);
   const contrast = (a,b) => {const x=lum(a),y=lum(b);return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05)};
   const rectOverlap = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-  const clear = () => { for (const e of fixed) e.removeAttribute(attribute); fixed.clear(); };
+  const clearTone = e => { e.removeAttribute(attribute); e.removeAttribute(inlineFillAttribute); };
+  const clear = () => { for (const e of fixed) clearTone(e); fixed.clear(); };
   function safeBackground(e, rect) {
     const chain=[];
     for(let n=e;n;n=n.parentElement) {
@@ -10396,13 +10566,15 @@ function startReadableLinks(doc, media) {
     let bg=[255,255,255];for(const c of chain.reverse())bg=bg.map((v,i)=>c[i]*c[3]+v*(1-c[3]));return bg;
   }
   function process(e) {
-    if(fixed.has(e)){e.removeAttribute(attribute);fixed.delete(e);}
+    if(fixed.has(e)){clearTone(e);fixed.delete(e);}
     const isLink=e.matches('a[href]');
     if(!isLink && (e.children.length || e.closest('a,button,input,textarea,select,summary,[role=button],[role=link],[tabindex],[contenteditable],pre,code')))return;
     if(!e.isConnected||e.children.length>4||!e.textContent.trim()||e.isContentEditable||(isLink && e.matches(':hover,:focus,:active'))||e.matches('[aria-disabled="true"]')||e.closest('[contenteditable="true"],[aria-disabled="true"],[disabled]'))return;
     const rect=e.getBoundingClientRect();if(!rect.width||!rect.height||rect.bottom<=0||rect.right<=0||rect.top>=innerHeight||rect.left>=innerWidth)return;
     const s=getComputedStyle(e);if(s.textShadow!=='none')return;
     const fg=parse(s.color);if(!fg||fg[3]<0.999)return;
+    const importantInline = e.style.getPropertyPriority('color') === 'important';
+    if (importantInline && (e.children.length || e.style.getPropertyPriority('-webkit-text-fill-color') === 'important' || !s.webkitTextFillColor || s.webkitTextFillColor !== s.color || s.webkitBackgroundClip === 'text')) return;
     for(const child of e.children){
       if(!['SPAN','CODE','EM','STRONG'].includes(child.tagName)||child.children.length)return;
       const cs=getComputedStyle(child),cb=parse(cs.backgroundColor);
@@ -10427,7 +10599,7 @@ function startReadableLinks(doc, media) {
     const bg=safeBackground(e,rect);if(!bg||contrast(fg,bg)>=4.5)return;
     let best=null,distance=Infinity;
     for(const [name,c] of Object.entries(colors))if((isLink || blue || ['neutral','text','base'].includes(name)) && contrast(c,bg)>=4.6){let d=c.reduce((v,x,i)=>v+(x-fg[i])**2,0);if(d<distance){distance=d;best=name;}}
-    if(best){e.setAttribute(attribute,best);fixed.add(e);}
+    if(best){e.setAttribute(attribute,best);if(importantInline)e.setAttribute(inlineFillAttribute,'');fixed.add(e);}
   }
   function scan() {
     timer=null;if(stopped||doc.hidden){clear();return;}
@@ -10436,11 +10608,20 @@ function startReadableLinks(doc, media) {
     siblingsCache=new WeakMap();siblingBudget=1024;const generation=epoch;
     if(!attachStyle()){clear();running=false;return;}
     let links=doc.querySelectorAll('a[href],p,span,label,small,li,div,td,th');if(links.length>2048)links=doc.querySelectorAll('a[href]');if(links.length>2048){clear();running=false;schedule(5000);return;}let i=0,visited=0;const seen=new Set();
-    function slice(){if(generation!==epoch){running=false;schedule(50);return;}const start=performance.now();while(i<links.length&&visited<256&&performance.now()-start<5){const e=links[i++],r=e.getBoundingClientRect();if(r.width&&r.height&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth){visited++;seen.add(e);process(e)}}if(i<links.length&&visited<256){setTimeout(slice,0);return;}for(const e of fixed)if(!seen.has(e)){e.removeAttribute(attribute);fixed.delete(e)}running=false;if(dirty)schedule(50);else schedule(1000);}
+    function slice(){if(generation!==epoch){running=false;schedule(50);return;}const start=performance.now();while(i<links.length&&visited<256&&performance.now()-start<5){const e=links[i++],r=e.getBoundingClientRect();if(r.width&&r.height&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth){visited++;seen.add(e);process(e)}}if(i<links.length&&visited<256){setTimeout(slice,0);return;}for(const e of fixed)if(!seen.has(e)){clearTone(e);fixed.delete(e)}running=false;if(dirty)schedule(50);else schedule(1000);}
     slice();
   }
   function schedule(delay=150){if(stopped||timer)return;timer=setTimeout(scan,delay);}
-  const observer=new MutationObserver(records=>{if(records.some(r=>r.target!==style&&!style.contains(r.target))){epoch++;clear();dirty=true;if(timer)clearTimeout(timer);timer=setTimeout(scan,250);}});
+  // Structured data in a hidden head cannot change the painted background.
+  // Ignore its insertion/removal so unrelated page updates do not briefly
+  // remove otherwise valid corrections. All visible and stylesheet changes
+  // still invalidate immediately.
+  function harmlessHeadData(r) {
+    if(r.type!=='childList'||r.target!==doc.head||getComputedStyle(doc.head).display!=='none')return false;
+    const nodes=[...r.addedNodes,...r.removedNodes];
+    return nodes.length>0&&nodes.every(n=>n.nodeType===1&&n.tagName==='SCRIPT'&&/^(?:application\/(?:ld\+)?json)$/i.test(n.getAttribute('type')||''));
+  }
+  const observer=new MutationObserver(records=>{if(records.some(r=>r.target!==style&&!style.contains(r.target)&&!harmlessHeadData(r))){epoch++;clear();dirty=true;if(timer)clearTimeout(timer);timer=setTimeout(scan,250);}});
   observer.observe(doc.documentElement,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','style','hidden','open','disabled','aria-hidden','aria-disabled','role','tabindex','contenteditable']});
   const invalidate=()=>{epoch++;clear();dirty=true;schedule(50)};
   for(const type of ['scroll','resize'])window.addEventListener(type,invalidate,{passive:true});
@@ -10451,6 +10632,13 @@ function startReadableLinks(doc, media) {
 
 const f = makeResourceFetcher(window.fetch.bind(window), details => GM.xmlHttpRequest(details));
 makeController(globalThis.DarkReader, window.matchMedia('(prefers-color-scheme: dark)'), f, undefined, undefined, () => getDarkReaderFixes(location.href), mode => { fixBitwardenLanding(mode); applySiteContrastFixes(mode); });
+if (location.hostname.toLowerCase() === 'app.graphify.com') startGraphifySvgContrast(document, window.matchMedia('(prefers-color-scheme: dark)'));
 if (!['rose-pine-youtube','rose-pine-official','rose-pine-requested'].some(id => document.getElementById(id))) startReadableLinks(document, window.matchMedia('(prefers-color-scheme: dark)'));
 
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeTheme, {once: true});
+} else {
+  initializeTheme();
+}
 })();

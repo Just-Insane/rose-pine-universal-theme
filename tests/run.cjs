@@ -25,6 +25,7 @@ function ratio(fg, bg) { const a = luminance(fg), b = luminance(bg); return (Mat
         await page.goto('http://example.test/');
         await page.addScriptTag({content: source});
         await page.waitForTimeout(7500);
+        if (mode === 'light') await page.waitForFunction(() => document.querySelector('#dark-fix')?.hasAttribute('data-rose-pine-link-tone'), null, {timeout: 10000});
         const read = selector => page.$eval(selector, e => { const s = getComputedStyle(e); return {fg: s.color, bg: s.backgroundColor, parentBg: getComputedStyle(e.parentElement).backgroundColor, tone: e.getAttribute('data-rose-pine-link-tone')}; });
         const badge = await read('#badge'), alt = await read('#badge-alt'), neutral = await read('#dark-fix');
         for (const id of ['disabled', 'button-role']) assert.equal((await read('#' + id)).tone, null, `${name}/${mode}: ${id} remains untouched`);
@@ -37,6 +38,8 @@ function ratio(fg, bg) { const a = luminance(fg), b = luminance(bg); return (Mat
         await page.waitForTimeout(1000);
         if (mode === 'light') {
           assert(neutral.tone, `${name}: neutral correction active`);
+          await page.evaluate(() => { const script = document.createElement('script'); script.type = 'application/json'; script.textContent = '{}'; document.head.appendChild(script); });
+          assert((await read('#dark-fix')).tone, `${name}: inert head script keeps existing correction`);
           await page.$eval('#dark-fix', e => e.setAttribute('aria-disabled', 'true'));
           await page.waitForTimeout(500);
           assert.equal((await read('#dark-fix')).tone, null, `${name}: disabled state removes correction`);

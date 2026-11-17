@@ -1,10 +1,10 @@
 {
   "name": "rose-pine-universal-theme",
-  "version": "1.8.8",
+  "version": "1.8.13",
   "private": true,
   "description": "Ros\u00e9 Pine userscript and browser regression fixtures",
   "scripts": {
-    "test": "node tests/run.cjs && node tests/csp.cjs && node tests/bitwarden.cjs",
+    "test": "node tests/startup.cjs && node tests/controller-stable.cjs && node tests/flash.cjs && node tests/late-theme.cjs && node tests/appearance-switch.cjs && node tests/switch-contrast.cjs && node tests/switch-native-contrast.cjs && node tests/switch-shadow.cjs && node tests/youtube-transition.cjs && node tests/upstream-variables.cjs && node tests/github-mermaid.cjs && node tests/graphify-selected.cjs && node tests/graphify-svg.cjs && node tests/run.cjs && node tests/csp.cjs && node tests/bitwarden.cjs",
     "test:syntax": "node --check src/rose-pine.user.js",
     "test:notte": "node tests/compare-notte.cjs",
     "test:public": "node tests/public-smoke.cjs"

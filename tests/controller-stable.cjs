@@ -1,0 +1,14 @@
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(process.env.ROSE_SCRIPT_PATH||path.join(__dirname,'../src/rose-pine.user.js'),'utf8');
+const a=source.indexOf('function makeController('),b=source.indexOf("if (typeof module !== 'undefined' && module.exports) module.exports = { makeController };",a);
+let timers=[],calls=[],background='rgb(255,255,255)',listener,active={disabled:false},alreadyDisabled={disabled:true};
+const document={querySelectorAll:()=>[{sheet:active},{sheet:alreadyDisabled}],createElement:()=>({remove(){}}),head:{appendChild(){}}};
+const c={document,module:{exports:{}},setTimeout:fn=>timers.push(fn)};vm.runInNewContext(source.slice(a,b)+'\nmodule.exports=makeController;',c);
+const engine={setFetchMethod(){},disable(){calls.push('disable')},enable(options){calls.push(options)}};
+const media={matches:false,addEventListener(_,fn){listener=fn}};
+c.module.exports(engine,media,()=>{},()=>{assert.equal(active.disabled,true);assert.equal(alreadyDisabled.disabled,true);return background},()=>{throw Error('Should not wait for an animation frame')});
+assert.equal(calls.length,1);assert.equal(calls[0].rosePineInvertLight,false);assert.equal(active.disabled,false);assert.equal(alreadyDisabled.disabled,true);
+timers.shift()();assert.equal(calls.length,1,'unchanged background does not rebuild theme');
+background='rgb(20,20,20)';timers.shift()();assert.equal(calls.length,3);assert.equal(calls[1],'disable');assert.equal(calls[2].rosePineInvertLight,true);assert.equal(active.disabled,false);
+media.matches=true;listener();assert.equal(calls.at(-1).mode,1);assert.equal(calls.filter(x=>x==='disable').length,2,'teardown only occurs when the actual classification changes');
+console.log('Stable rechecks, late dark background, restored stylesheet states and mode change passed');

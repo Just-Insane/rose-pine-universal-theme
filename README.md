@@ -28,7 +28,7 @@ The contrast layer avoids ambiguous backgrounds and caps work. It will leave som
 
 ## Upstream material
 
-- [Dark Reader](https://github.com/darkreader/darkreader), v4.9.135 dynamic engine and site-fix data: MIT, see `licenses/dark-reader-MIT.txt`.
+- [Dark Reader](https://github.com/darkreader/darkreader), v4.9.135 dynamic engine and site-fix data, with variable-handling fixes from commits `78b1ccd0ef46` and `b28193642844`: MIT, see `licenses/dark-reader-MIT.txt`.
 - [Rosé Pine userstyles](https://github.com/rose-pine/userstyles), commit `1d855f297e9241cb8dd087dc10d6a90540c8c4dc`: MIT, see `licenses/rose-pine-userstyles-MIT.txt`.
 - [CSS Tree](https://github.com/csstree/csstree), v3.2.1: MIT, see `licenses/css-tree-MIT.txt`.
 - The contrast approach also draws on ideas from [Midnight Lizard](https://github.com/Midnight-Lizard/Midnight-Lizard) (MIT); no code from that project is bundled. [Notte](https://github.com/Isobastian/Notte-Accessibility) is used only in the optional independent comparison.
